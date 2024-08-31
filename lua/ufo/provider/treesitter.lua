@@ -30,9 +30,10 @@ end
 local MetaNode = {}
 MetaNode.__index = MetaNode
 
-function MetaNode:new(range)
+function MetaNode:new(range, type)
     local o = self == MetaNode and setmetatable({}, self) or self
     o.value = range
+    o.type = type
     return o
 end
 
@@ -43,7 +44,7 @@ end
 
 --- Return a meta node that represents a range between two nodes, i.e., (#make-range!),
 --- that is similar to the legacy TSRange.from_node() from nvim-treesitter.
-function MetaNode.from_nodes(start_node, end_node)
+function MetaNode.from_nodes(start_node, end_node, type)
     local start_pos = { start_node:start() }
     local end_pos = { end_node:end_() }
     return MetaNode:new({
@@ -51,7 +52,11 @@ function MetaNode.from_nodes(start_node, end_node)
         [2] = start_pos[2],
         [3] = end_pos[1],
         [4] = end_pos[2],
-    })
+    }, type)
+end
+
+function MetaNode:type()
+    return self.type
 end
 
 local function prepareQuery(bufnr, parser, root, rootLang, queryName)
@@ -102,7 +107,7 @@ local function iterFoldMatches(bufnr, parser, root, rootLang)
         for id, node in pairs(match) do
             local m = metadata[id]
             if m and m.range then
-                node = MetaNode:new(m.range)
+                node = MetaNode:new(m.range, node:type())
             end
             table.insert(matches, node)
         end
@@ -112,7 +117,7 @@ local function iterFoldMatches(bufnr, parser, root, rootLang)
         if preds then
             for _, pred in pairs(preds) do
                 if pred[1] == 'make-range!' and type(pred[2]) == 'string' and #pred == 4 then
-                    local node = MetaNode.from_nodes(match[pred[3]], match[pred[4]])
+                    local node = MetaNode.from_nodes(match[pred[3]], match[pred[4]], "make-range!")
                     table.insert(matches, node)
                 end
             end
@@ -179,7 +184,8 @@ function Treesitter.getFolds(bufnr)
             stop = stop - 1
         end
         if stop > start then
-            local type = node.type and node:type() or nil
+            -- local type = node.type and node:type() or nil
+            local type = node.type or nil
             table.insert(ranges, foldingrange.new(start, stop, nil, nil, type))
         end
     end
