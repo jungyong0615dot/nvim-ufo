@@ -179,14 +179,19 @@ function Treesitter.getFolds(bufnr)
         error('UfoFallbackException')
     end
     for _, node in ipairs(matches) do
-        local start, _, stop, stop_col = node:range()
-        if stop_col == 0 then
-            stop = stop - 1
-        end
-        if stop > start then
-            -- local type = node.type and node:type() or nil
-            local type = node.type or nil
-            table.insert(ranges, foldingrange.new(start, stop, nil, nil, type))
+        -- node와 range 메서드가 존재하는지 확인
+        if node and type(node.range) == 'function' then
+            local range_ok, start, _, stop, stop_col = pcall(node.range, node)
+            if range_ok and start and stop then
+                if stop_col == 0 then
+                    stop = stop - 1
+                end
+                if stop > start then
+                    -- local type = node.type and node:type() or nil
+                    local type = node.type or nil
+                    table.insert(ranges, foldingrange.new(start, stop, nil, nil, type))
+                end
+            end
         end
     end
     foldingrange.sortRanges(ranges)
