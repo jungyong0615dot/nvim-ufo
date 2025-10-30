@@ -1,3 +1,5 @@
+local api = vim.api
+
 local buffer = require('ufo.model.foldbuffer')
 local event = require('ufo.lib.event')
 local disposable = require('ufo.lib.disposable')
@@ -17,15 +19,16 @@ local FoldBufferManager = {}
 ---
 ---@param namespace number
 ---@param selector function
----@param closeKindsMap <table, string,UfoFoldingRangeKind[]>
+---@param closeKindsMap table<string,UfoFoldingRangeKind[]>
 ---@return UfoFoldBufferManager
-function FoldBufferManager:initialize(namespace, selector, closeKindsMap)
+function FoldBufferManager:initialize(namespace, selector, closeKindsMap, closeCurrentLineFoldsMap)
     if self.initialized then
         return self
     end
     self.ns = namespace
     self.providerSelector = selector
     self.closeKindsMap = closeKindsMap
+    self.closeCurrentLineFoldsMap = closeCurrentLineFoldsMap
     self.buffers = {}
     self.initialized = true
     self.disposables = {}
@@ -131,11 +134,12 @@ function FoldBufferManager:isFoldMethodsDisabled(fb)
     return not fb.providers or fb.providers[1] == ''
 end
 
-function FoldBufferManager:getRowPairsByScanning(fb, winid)
+function FoldBufferManager:getRowPairs(winid)
     local rowPairs = {}
-    for _, range in ipairs(fb:scanFoldedRanges(winid)) do
-        local row, endRow = range[1], range[2]
-        rowPairs[row] = endRow
+    local pairs, closed = driver:getFoldsAndClosedInfo(winid)
+    for _, lnum in ipairs(closed) do
+        local endLnum = pairs[lnum]
+        rowPairs[lnum - 1] = endLnum - 1
     end
     return rowPairs
 end
@@ -162,20 +166,28 @@ function FoldBufferManager:applyFoldRanges(bufnr, ranges, manual)
         return -1
     elseif not vim.wo[winid].foldenable or utils.isDiffOrMarkerFold(winid) then
         return -1
+    elseif vim.fn.getcmdwintype() ~= "" then
+        return -1
     elseif utils.mode() ~= 'n' then
         return -1
     end
     local rowPairs = {}
     local isFirstApply = not fb.scanned
     if not manual and not fb.scanned or windows then
-        rowPairs = self:getRowPairsByScanning(fb, winid)
+        rowPairs = self:getRowPairs(winid)
         local kinds = self.closeKindsMap[fb:filetype()] or self.closeKindsMap.default
+        local closeCurrentLineFolds = self.closeCurrentLineFoldsMap[fb:filetype()] or self.closeCurrentLineFoldsMap.default
+        local curRow = api.nvim_win_get_cursor(winid)[1] - 1
         for _, range in ipairs(fb.foldRanges) do
             if range.kind and vim.tbl_contains(kinds, range.kind) then
                 local startLine, endLine = range.startLine, range.endLine
-                rowPairs[startLine] = endLine
-                fb:closeFold(startLine + 1, endLine + 1)
+                if closeCurrentLineFolds or curRow <= startLine or curRow > endLine then
+                    rowPairs[startLine] = endLine
+                end
             end
+        end
+        for startLine, endLine in pairs(rowPairs) do
+            fb:closeFold(startLine + 1, endLine + 1)
         end
         fb.scanned = true
     else
@@ -188,7 +200,10 @@ function FoldBufferManager:applyFoldRanges(bufnr, ranges, manual)
         if not ok then
             log.info(res)
             fb:resetFoldedLines(true)
-            rowPairs = self:getRowPairsByScanning(fb, winid)
+            rowPairs = self:getRowPairs(winid)
+            for startLine, endLine in pairs(rowPairs) do
+                fb:closeFold(startLine + 1, endLine + 1)
+            end
         end
     end
 

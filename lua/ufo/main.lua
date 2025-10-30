@@ -49,7 +49,6 @@ local function createEvents()
         group = gid,
         pattern = {'buftype', 'filetype', 'syntax', 'diff'},
         callback = function(ev)
-            local bufnr = api.nvim_get_current_buf()
             local match = ev.match
             local e
             if match == 'buftype' then
@@ -64,7 +63,7 @@ local function createEvents()
             else
                 error([[Didn't match any events!]])
             end
-            event:emit(e, bufnr, vim.v.option_new, vim.v.option_old)
+            event:emit(e, ev.buf, vim.v.option_new, vim.v.option_old)
         end
     })
     return disposable:create(function()
@@ -119,6 +118,11 @@ function M.inspectBuf(bufnr)
     end
     local msg = {}
     table.insert(msg, 'Buffer: ' .. bufnr)
+    local winid = utils.getWinByBuf(bufnr)
+    if utils.isDiffOrMarkerFold(winid) then
+        table.insert(msg, 'Fold method: ' .. vim.wo[winid].foldmethod)
+        return msg
+    end
     table.insert(msg, 'Fold Status: ' .. fb.status)
     local main = fb.providers[1]
     table.insert(msg, 'Main provider: ' .. (type(main) == 'function' and 'external' or main))
@@ -126,9 +130,8 @@ function M.inspectBuf(bufnr)
         table.insert(msg, 'Fallback provider: ' .. fb.providers[2])
     end
     table.insert(msg, 'Selected provider: ' .. (fb.selectedProvider or 'nil'))
-    local winid = utils.getWinByBuf(bufnr)
     local curKind
-    local curStartLine, curEndLine = 0, 0
+    local curStartLine, curEndLine = -1, -1
     local kindSet = {}
     local lnum = api.nvim_win_get_cursor(winid)[1]
     for _, range in ipairs(fb.foldRanges) do
@@ -146,7 +149,7 @@ function M.inspectBuf(bufnr)
         table.insert(kinds, kind)
     end
     table.insert(msg, 'Fold kinds: ' .. table.concat(kinds, ', '))
-    if curStartLine ~= 0 or curEndLine ~= 0 then
+    if curStartLine >= 0 or curEndLine >= 0 then
         table.insert(msg, ('Cursor range: [%d, %d]'):format(curStartLine + 1, curEndLine + 1))
     end
     if curKind then

@@ -1,5 +1,6 @@
 local bufmanager = require('ufo.bufmanager')
 local foldingrange = require('ufo.model.foldingrange')
+local utils = require('ufo.utils')
 
 ---@class UfoTreesitterProvider
 ---@field hasProviders table<string, boolean>
@@ -23,8 +24,8 @@ local get_query_files = assert(vim.treesitter.query.get_files or vim.treesitter.
 
 -- Backward compatibility for the dummy directive (#make-range!),
 -- which no longer exists in nvim-treesitter v1.0+
-if not vim.tbl_contains(vim.treesitter.query.list_directives(), "make-range!") then
-    vim.treesitter.query.add_directive("make-range!", function() end, {})
+if not vim.tbl_contains(vim.treesitter.query.list_directives(), 'make-range!') then
+    vim.treesitter.query.add_directive('make-range!', function() end, {})
 end
 
 local MetaNode = {}
@@ -32,31 +33,31 @@ MetaNode.__index = MetaNode
 
 function MetaNode:new(range, type)
     local o = self == MetaNode and setmetatable({}, self) or self
-    o.value = range
-    o.type = type
+    o._range = range
+    o._type = type
     return o
 end
 
 function MetaNode:range()
-    local range = self.value
+    local range = self._range
     return range[1], range[2], range[3], range[4]
+end
+
+function MetaNode:type()
+    return self._type
 end
 
 --- Return a meta node that represents a range between two nodes, i.e., (#make-range!),
 --- that is similar to the legacy TSRange.from_node() from nvim-treesitter.
-function MetaNode.from_nodes(start_node, end_node, type)
-    local start_pos = { start_node:start() }
-    local end_pos = { end_node:end_() }
+function MetaNode.from_nodes(startNode, endNode, nodeType)
+    local start_pos = {startNode:start()}
+    local end_pos = {endNode:end_()}
     return MetaNode:new({
         [1] = start_pos[1],
         [2] = start_pos[2],
         [3] = end_pos[1],
         [4] = end_pos[2],
-    }, type)
-end
-
-function MetaNode:type()
-    return self.type
+    }, nodeType)
 end
 
 local function prepareQuery(bufnr, parser, root, rootLang, queryName)
@@ -89,6 +90,11 @@ local function prepareQuery(bufnr, parser, root, rootLang, queryName)
     }
 end
 
+local function getNodesType(nodes)
+    local node = utils.has11() and nodes[1] or nodes
+    return node.type and node:type() or nil
+end
+
 local function iterFoldMatches(bufnr, parser, root, rootLang)
     local q, p = prepareQuery(bufnr, parser, root, rootLang, 'folds')
     if not q then
@@ -104,11 +110,22 @@ local function iterFoldMatches(bufnr, parser, root, rootLang)
         end
 
         -- Extract capture names from each match
-        for id, node in pairs(match) do
+        for id, nodes in pairs(match) do
             local m = metadata[id]
+            local node, nType
             if m and m.range then
-                node = MetaNode:new(m.range, node:type())
+                nType = getNodesType(nodes)
+                node = MetaNode:new(m.range, nType)
+            elseif type(nodes) ~= 'table' then
+                -- old behaviou before 0.11
+                node = nodes
+            elseif #nodes == 1 then
+                node = nodes[1]
+            else
+                nType = getNodesType(nodes)
+                node = MetaNode.from_nodes(nodes[1], nodes[#nodes], nType)
             end
+
             table.insert(matches, node)
         end
 
@@ -171,6 +188,9 @@ function Treesitter.getFolds(bufnr)
         self.hasProviders[ft] = false
         error('UfoFallbackException')
     end
+    if utils.has11() then
+        parser:parse()
+    end
 
     local ranges = {}
     local ok, matches = getCpatureMatchesRecursively(bufnr, parser)
@@ -179,18 +199,14 @@ function Treesitter.getFolds(bufnr)
         error('UfoFallbackException')
     end
     for _, node in ipairs(matches) do
-        -- node와 range 메서드가 존재하는지 확인
-        if node and type(node.range) == 'function' then
-            local range_ok, start, _, stop, stop_col = pcall(node.range, node)
-            if range_ok and start and stop then
-                if stop_col == 0 then
-                    stop = stop - 1
-                end
-                if stop > start then
-                    -- local type = node.type and node:type() or nil
-                    local type = node.type or nil
-                    table.insert(ranges, foldingrange.new(start, stop, nil, nil, type))
-                end
+        if node.range then
+            local start, _, stop, stop_col = node:range()
+            if stop_col == 0 then
+                stop = stop - 1
+            end
+            if stop > start then
+                local type = node.type and node:type() or nil
+                table.insert(ranges, foldingrange.new(start, stop, nil, nil, type))
             end
         end
     end

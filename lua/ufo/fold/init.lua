@@ -36,7 +36,11 @@ local function tryUpdateFold(bufnr)
 end
 
 local function setFoldText(bufnr)
-    api.nvim_buf_call(bufnr, function()
+    local winid = utils.getWinByBuf(bufnr)
+    if not utils.isWinValid(winid) then
+        return
+    end
+    utils.winCall(winid, function()
         cmd([[
             setl foldtext=v:lua.require'ufo.main'.foldtext()
             setl fillchars+=fold:\ ]])
@@ -159,7 +163,13 @@ updateFoldDebounced = (function()
 end)()
 
 local function handleDiffMode(winid, new, old)
-    if old ~= new and new == 0 then
+    if old == new then
+        return
+    end
+    if not utils.has10() then
+        new, old = new == '1', old == '1'
+    end
+    if not new then
         local bufnr = api.nvim_win_get_buf(winid)
         local fb = manager:get(bufnr)
 
@@ -217,7 +227,7 @@ function Fold:initialize(ns)
     event:on('BufAttach', Fold.attach, self.disposables)
     event:on('DiffModeChanged', handleDiffMode, self.disposables)
     table.insert(self.disposables, manager:initialize(ns, config.provider_selector,
-        config.close_fold_kinds_for_ft))
+        config.close_fold_kinds_for_ft, config.close_fold_current_line_for_ft))
     return self
 end
 

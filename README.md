@@ -4,7 +4,12 @@ The goal of nvim-ufo is to make Neovim's fold look modern and keep high performa
 
 <https://user-images.githubusercontent.com/17562139/173796287-9842fb3a-37c2-47fb-8968-6e7600c0fcef.mp4>
 
-> [setup foldcolumn like demo](https://github.com/kevinhwang91/nvim-ufo/issues/4)
+> setup foldcolumn like demo
+
+```lua
+-- use Neovim nightly branch
+vim.o.fillchars = 'eob: ,fold: ,foldopen:,foldsep: ,foldinner: ,foldclose:'
+```
 
 ---
 
@@ -80,7 +85,7 @@ capabilities.textDocument.foldingRange = {
     dynamicRegistration = false,
     lineFoldingOnly = true
 }
-local language_servers = require("lspconfig").util.available_servers() -- or list servers manually like {'gopls', 'clangd'}
+local language_servers = vim.lsp.get_clients() -- or list servers manually like {'gopls', 'clangd'}
 for _, ls in ipairs(language_servers) do
     require('lspconfig')[ls].setup({
         capabilities = capabilities
@@ -159,6 +164,14 @@ For example, Changing the text in a buffer will request the providers for folds.
                     default value if value of filetype is absent.
                     Run `UfoInspect` for details if your provider has extended the kinds.]],
         default = {default = {}}
+    },
+    close_fold_current_line_for_ft = {
+        description = [[Whether to close folds on the current line when the buffer is first
+                    displayed.
+                    This option is a table with filetype as key and boolean as value. Use a
+                    default value if value of filetype is absent.
+                    ]],
+        default = {default = false}
     },
     fold_virt_text_handler = {
         description = [[A function customize fold virt text, see ### Customize fold text]],
@@ -291,6 +304,10 @@ require('ufo').setup({
         json = {'array'},
         c = {'comment', 'region'}
     },
+    close_fold_current_line_for_ft = {
+        default = true,
+        c = false
+    },
     preview = {
         win_config = {
             border = {'', '─', '', '', '', '─', '', ''},
@@ -375,6 +392,10 @@ require('ufo').setup({
 -- local bufnr = vim.api.nvim_get_current_buf()
 -- require('ufo').setFoldVirtTextHandler(bufnr, handler)
 ```
+
+## Sponsors
+
+A special thanks to [zmto](https://zmto.com) for sponsoring nvim-ufo! Their support is greatly appreciated and helps drive the project forward.
 
 ## Feedback
 

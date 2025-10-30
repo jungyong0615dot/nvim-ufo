@@ -1,4 +1,5 @@
 local cmd = vim.cmd
+local fn = vim.fn
 
 local utils = require('ufo.utils')
 
@@ -21,12 +22,75 @@ end
 ---@type UfoFoldDriverNonFFI|UfoFoldDriverFFI
 local FoldDriver
 
----@class UfoFoldDriverFFI
+local tmpname
+local tmpFD
+
+---@class UfoFoldDriverBase
+---@field _tmpname string
+---@field _tmpFD userdata
+local FoldDriverBase = {}
+FoldDriverBase.__index = FoldDriverBase
+
+function FoldDriverBase:getTmpHandle()
+    if not tmpFD then
+        tmpFD = assert(io.open(tmpname, 'r'))
+    end
+    return tmpFD
+end
+
+function FoldDriverBase:getFoldsAndClosedInfo(winid)
+    local vop = vim.o.viewoptions
+    local foundFolds = vop:find('folds', 1, true) ~= nil
+    if not foundFolds then
+        cmd('noa set viewoptions+=folds')
+    end
+    utils.winCall(winid, function()
+        cmd('mkview! ' .. tmpname)
+    end)
+    if not foundFolds then
+        cmd('noa set viewoptions=' .. vop)
+    end
+    local fd = self:getTmpHandle()
+    fd:seek('set')
+    local pairs = {}
+    local closed = {}
+    local lastLine
+    local flag = 0
+    for line in fd:lines() do
+        if flag == 1 then
+            local s, e = line:match('(%d+),(%d+)fold$')
+            if s then
+                s, e = tonumber(s), tonumber(e)
+                ---@diagnostic disable-next-line: need-check-nil
+                pairs[s] = e
+            else
+                flag = 2
+            end
+        elseif flag == 2 then
+            if line:match('! zc$') then
+                local s = tonumber(lastLine)
+                if s then
+                    table.insert(closed, s)
+                end
+            end
+        else
+            if flag == 0 and line:match('! zE$') then
+                flag = 1
+            end
+        end
+        lastLine = line
+    end
+    return pairs, closed
+end
+
+---@class UfoFoldDriverFFI:UfoFoldDriverBase
+---@field _wffi UfoWffi
 local FoldDriverFFI = {}
+FoldDriverFFI.__index = FoldDriverFFI
+setmetatable(FoldDriverFFI, FoldDriverBase)
 
 function FoldDriverFFI:new(wffi)
     local o = setmetatable({}, self)
-    self.__index = self
     self._wffi = wffi
     return o
 end
@@ -53,12 +117,13 @@ function FoldDriverFFI:createFolds(winid, ranges, rowPairs)
     end)
 end
 
----@class UfoFoldDriverNonFFI
+---@class UfoFoldDriverNonFFI:UfoFoldDriverBase
 local FoldDriverNonFFI = {}
+FoldDriverNonFFI.__index = FoldDriverNonFFI
+setmetatable(FoldDriverNonFFI, FoldDriverBase)
 
 function FoldDriverNonFFI:new()
     local o = setmetatable({}, self)
-    self.__index = self
     return o
 end
 
@@ -95,6 +160,7 @@ function FoldDriverNonFFI:createFolds(winid, ranges, rowPairs)
 end
 
 local function init()
+    tmpname = fn.tempname()
     if jit ~= nil then
         FoldDriver = FoldDriverFFI:new(require('ufo.wffi'))
     else

@@ -117,6 +117,15 @@ local function mapInlayMarkers(bufnr, startRow, marks, ns)
     end
 end
 
+if utils.has11() then
+    function M.rendering(bufnr, winid)
+        return not treesitter.parserFinished(bufnr, winid)
+    end
+else
+    ---@diagnostic disable-next-line: unused-local
+    function M.rendering(bufnr, winid) return false end
+end
+
 function M.mapHighlightLimitByRange(srcBufnr, dstBufnr, baseRow, startRange, endRange, text, ns)
     local startRow, startCol = startRange[1], startRange[2]
     local endRow, endCol = endRange[1], endRange[2]
@@ -161,6 +170,10 @@ end
 
 function M.setVirtText(bufnr, ns, row, col, virtText, opts)
     return extmark.setVirtText(bufnr, ns, row, col, virtText, opts)
+end
+
+function M.getLineExtMarkIds(bufnr, lnum, namespaces)
+    return extmark.getIdsByRange(bufnr, {lnum - 1, 0}, {lnum, 0}, namespaces)
 end
 
 function M.captureVirtText(bufnr, text, lnum, syntax, namespaces, concealLevel)
@@ -248,15 +261,13 @@ end
 ---@param shared? boolean
 ---@return Promise
 function M.highlightLinesWithTimeout(handle, hlGroup, ns, start, finish, delay, shared)
-    vim.validate({
-        handle = {handle, 'number'},
-        hlGroup = {hlGroup, 'string'},
-        ns = {ns, 'number'},
-        start = {start, 'number'},
-        finish = {finish, 'number'},
-        delay = {delay, 'number', true},
-        shared = {shared, 'boolean', true},
-    })
+    utils.validate('handle', handle, 'number')
+    utils.validate('hlGroup', hlGroup, 'string')
+    utils.validate('ns', ns, 'number')
+    utils.validate('start', start, 'number')
+    utils.validate('finish', finish, 'number')
+    utils.validate('delay', delay, 'number', true)
+    utils.validate('shared', shared, 'boolean', true)
     local ids = {}
     local onFulfilled
     if shared then

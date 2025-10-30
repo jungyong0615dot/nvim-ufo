@@ -31,6 +31,7 @@ local collection
 local bufnrSet
 local namespaces
 local handlerErrorMsg
+local debounced
 
 ---@diagnostic disable-next-line: unused-local
 local function onStart(name, tick)
@@ -42,24 +43,27 @@ end
 ---@diagnostic disable-next-line: unused-local
 local function onWin(name, winid, bufnr, topRow, botRow)
     local fb = fold.get(bufnr)
-    if bufnrSet[bufnr] or not fb or fb.foldedLineCount == 0 and not vim.wo[winid].foldenable then
+    if not fb or fb.foldedLineCount == 0 and not vim.wo[winid].foldenable or
+        render.rendering(bufnr, winid) then
+        -- vim.treesitter.highlighter._on_win will fire next redraw if parser done
         collection[winid] = nil
         return false
     end
     local self = Decorator
     local wses = self.winSessions[winid]
-    wses:onWin(bufnr, fb)
-    collection[winid] = {
-        winid = winid,
-        bufnr = bufnr,
-        rows = {}
-    }
+    wses:onWin(bufnr, fb, topRow, botRow)
+    if bufnrSet[bufnr] == nil then
+        collection[winid] = {}
+    end
     bufnrSet[bufnr] = winid
 end
 
 ---@diagnostic disable-next-line: unused-local
 local function onLine(name, winid, bufnr, row)
-    table.insert(collection[winid].rows, row)
+    local rows = collection[winid]
+    if rows then
+        table.insert(rows, row)
+    end
 end
 
 ---@diagnostic disable-next-line: unused-local
@@ -67,16 +71,16 @@ local function onEnd(name, tick)
     local needRedraw = false
     local self = Decorator
     self.curWinid = api.nvim_get_current_win()
-    for winid, data in pairs(collection or {}) do
-        if #data.rows > 0 then
+    for winid, rows in pairs(collection or {}) do
+        if #rows > 0 then
             local wses = self.winSessions[winid]
-            local fb = wses.foldbuffer
-            local foldedPairs = wses.foldedPairs
+            local fb, foldedPairs = wses.foldbuffer, wses.foldedPairs
             if self.curWinid == winid and not next(foldedPairs) then
-                foldedPairs = self:computeFoldedPairs(data.rows)
+                foldedPairs = self:computeFoldedPairs(rows)
             end
             local shared
-            for _, row in ipairs(data.rows) do
+            local didOpen = false
+            for _, row in ipairs(rows) do
                 local lnum = row + 1
                 if not foldedPairs[lnum] and fb:lineIsClosed(lnum) then
                     if shared == nil then
@@ -84,17 +88,17 @@ local function onEnd(name, tick)
                         shared = winids ~= nil
                     end
                     self:highlightOpenFold(fb, winid, lnum, shared)
-                    local didOpen = fb:openFold(lnum)
+                    didOpen = fb:openFold(lnum) or didOpen
                     if not shared then
                         needRedraw = didOpen or needRedraw
                     end
                 end
             end
-            local cursor = wses:cursor()
-            local curLnum = cursor[1]
-            if needRedraw then
+            if didOpen then
                 fb:syncFoldedLines(winid)
             end
+            local cursor = wses:cursor()
+            local curLnum = cursor[1]
             local curFoldStart, curFoldEnd = 0, 0
             for fs, fe in pairs(foldedPairs) do
                 local _, didClose = self:getVirtTextAndCloseFold(winid, fs, fe)
@@ -126,6 +130,7 @@ local function onEnd(name, tick)
             wses.lastCurLnum = curLnum
         end
     end
+    self.lastWinid = self.curWinid
     if needRedraw then
         log.debug('Need redraw.')
         if utils.has10() then
@@ -134,7 +139,7 @@ local function onEnd(name, tick)
             cmd('redraw')
         end
     end
-    self.lastWinid = self.curWinid
+    debounced()
 end
 
 local function silentOnEnd(...)
@@ -200,6 +205,39 @@ function Decorator:computeFoldedPairs(rows)
     return res
 end
 
+function Decorator:getOtherNamespaces()
+    if not next(namespaces) then
+        for _, ns in pairs(api.nvim_get_namespaces()) do
+            if self.ns ~= ns then
+                table.insert(namespaces, ns)
+            end
+        end
+    end
+    return namespaces
+end
+
+function Decorator:removeStaleVirtText()
+    local ok = false
+    local bufs = {}
+    local wins = api.nvim_list_wins()
+    for _, winid in ipairs(wins) do
+        local bufnr = api.nvim_win_get_buf(winid)
+        if bufs[bufnr] then
+            return false
+        end
+        bufs[bufnr] = true
+    end
+    for _, winid in ipairs(wins) do
+        ---@type UfoWindow
+        local wses = rawget(self.winSessions, winid)
+        if wses and wses.foldbuffer then
+            local fb, s, e = wses.foldbuffer, wses.topRow + 1, wses.botRow + 1
+            ok = fb:openStaleFoldsByRange(s, e, self:getOtherNamespaces()) or ok
+        end
+    end
+    return ok
+end
+
 function Decorator:getVirtTextAndCloseFold(winid, lnum, endLnum, doRender)
     local didClose = false
     local wses = self.winSessions[winid]
@@ -210,12 +248,11 @@ function Decorator:getVirtTextAndCloseFold(winid, lnum, endLnum, doRender)
     if endLnum then
         wses.foldedPairs[lnum] = endLnum
     end
-    local width = wses:textWidth()
     local ok, res = true, wses.foldedTextMaps[lnum]
     local fl = fb:foldedLine(lnum)
     local rendered = false
     if fl then
-        if not res and not fl:widthChanged(width) then
+        if not res and not wses:textWidthChanged() then
             res = fl.virtText
         end
         rendered = fl:hasRendered()
@@ -230,14 +267,8 @@ function Decorator:getVirtTextAndCloseFold(winid, lnum, endLnum, doRender)
             local virtText
             local syntax = fb:syntax() ~= ''
             local concealLevel = wses:concealLevel()
-            if not next(namespaces) then
-                for _, ns in pairs(api.nvim_get_namespaces()) do
-                    if self.ns ~= ns then
-                        table.insert(namespaces, ns)
-                    end
-                end
-            end
-            virtText = render.captureVirtText(bufnr, text, lnum, syntax, namespaces, concealLevel)
+            local nss = self:getOtherNamespaces()
+            virtText = render.captureVirtText(bufnr, text, lnum, syntax, nss, concealLevel)
             local getFoldVirtText
             if self.enableGetFoldVirtText then
                 getFoldVirtText = function(l)
@@ -246,9 +277,10 @@ function Decorator:getVirtTextAndCloseFold(winid, lnum, endLnum, doRender)
                     assert(lnum <= l and l <= endLnum,
                         ('expected lnum range from %d to %d, got %d'):format(lnum, endLnum, l))
                     local line = fb:lines(l)[1]
-                    return render.captureVirtText(bufnr, line, l, syntax, namespaces, concealLevel)
+                    return render.captureVirtText(bufnr, line, l, syntax, nss, concealLevel)
                 end
             end
+            local width = wses:textWidth()
             ok, res = pcall(handler, virtText, lnum, endLnum, width, utils.truncateStrByWidth, {
                 bufnr = bufnr,
                 winid = winid,
@@ -261,24 +293,23 @@ function Decorator:getVirtTextAndCloseFold(winid, lnum, endLnum, doRender)
                 end,
                 get_fold_virt_text = getFoldVirtText
             })
+            if not ok then
+                log.error(res)
+                res = {{handlerErrorMsg, 'Error'}}
+            end
             wses.foldedTextMaps[lnum] = res
         end
-        if doRender == nil then
-            doRender = true
-        end
-        if ok then
-            if bufnrSet[bufnr] == winid then
-                if doRender then
+        if bufnrSet[bufnr] == winid then
+            if (doRender == nil or doRender == true) then
+                if ok then
                     log.debug('Window:', winid, 'need add/update folded lnum:', lnum)
                     didClose = true
-                else
-                    log.debug('Window:', winid, 'will add/update folded lnum:', lnum)
                 end
-                fb:closeFold(lnum, endLnum, text, res, width, doRender)
+                local nss = self:getOtherNamespaces()
+                fb:closeFold(lnum, endLnum, res, nss)
+            elseif ok then
+                log.debug('Window:', winid, 'will add/update folded lnum:', lnum)
             end
-        else
-            fb:closeFold(lnum, endLnum, text, {{handlerErrorMsg, 'Error'}}, width, doRender)
-            log.error(res)
         end
     end
     return res, didClose
@@ -349,18 +380,24 @@ function Decorator:initialize(namespace)
         for bufnr in ipairs(fold.buffers()) do
             self:resetCurosrFoldedLineHighlightByBuf(bufnr)
         end
+        self.winSessions = {}
     end))
     self.enableGetFoldVirtText = config.enable_get_fold_virt_text
     self.openFoldHlTimeout = config.open_fold_hl_timeout
     self.openFoldHlEnabled = self.openFoldHlTimeout > 0
-    event:on('setOpenFoldHl', function(val)
+    event:on('SetOpenFoldHl', function(val)
         if type(val) == 'boolean' then
             self.openFoldHlEnabled = val
         else
             self.openFoldHlEnabled = self.openFoldHlTimeout > 0
         end
     end, self.disposables)
-
+    event:on('RenderHold', function()
+        if self:removeStaleVirtText() then
+            log.debug('Redraw in debounced function.')
+            cmd('redraw!')
+        end
+    end, self.disposables)
     local virtTextHandler = config.fold_virt_text_handler or self.defaultVirtTextHandler
     self.virtTextHandlers = setmetatable({}, {
         __index = function(tbl, bufnr)
@@ -368,6 +405,9 @@ function Decorator:initialize(namespace)
             return virtTextHandler
         end
     })
+    debounced = require('ufo.lib.debounce')(function()
+        event:emit('RenderHold')
+    end, 500)
     handlerErrorMsg = ([[!Error in user's handler, check out `%s`]]):format(log.path)
     self.winSessions = setmetatable({}, {
         __index = function(tbl, winid)

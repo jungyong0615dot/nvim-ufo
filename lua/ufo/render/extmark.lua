@@ -2,6 +2,17 @@ local api = vim.api
 
 local M = {}
 
+function M.getIdsByRange(bufnr, startRange, endRange, namespaces)
+    local ids = {}
+    for _, ns in pairs(namespaces or {}) do
+        local marks = api.nvim_buf_get_extmarks(bufnr, ns, startRange, endRange, {})
+        for _, m in ipairs(marks) do
+            table.insert(ids, m[1])
+        end
+    end
+    return ids
+end
+
 ---
 ---@param bufnr number
 ---@param startRange number[]
@@ -18,9 +29,11 @@ function M.getHighlightsAndInlayByRange(bufnr, startRange, endRange, namespaces)
             local er = details.end_row or sr
             local ec = details.end_col or (sc + 1)
             local hlGroup = details.hl_group
-            local priority = details.priority
+            local priority = details.priority or 4096
             local conceal = details.conceal
-            local virtTextPos = details.virt_text_pos
+            if conceal then
+                hlGroup = hlGroup or 'Normal'
+            end
             if hlGroup then
                 if er > endRow then
                     er, ec = endRow, endCol

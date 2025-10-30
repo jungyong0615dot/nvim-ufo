@@ -4,6 +4,7 @@ local cmd = vim.cmd
 local utils = require('ufo.utils')
 local buffer = require('ufo.model.buffer')
 local foldedline = require('ufo.model.foldedline')
+local render = require('ufo.render')
 
 ---@class UfoFoldBuffer
 ---@field bufnr number
@@ -154,6 +155,27 @@ function FoldBuffer:lineIsClosed(lnum)
 end
 
 ---
+---@param s number
+---@param e number
+---@param namespaces number[]
+---@return boolean
+function FoldBuffer:openStaleFoldsByRange(s, e, namespaces)
+    local res = false
+    for lnum = s, e do
+        -- Async call, arguments may be invalid
+        local ok, ids = pcall(render.getLineExtMarkIds, self.bufnr, lnum, namespaces)
+        if ok then
+            local fl = self.foldedLines[lnum]
+            if fl and not fl:validExtIds(ids) then
+                self:openFold(lnum)
+                res = true
+            end
+        end
+    end
+    return res
+end
+
+---
 ---@param winid number
 function FoldBuffer:syncFoldedLines(winid)
     for lnum, fl in ipairs(self.foldedLines) do
@@ -198,63 +220,57 @@ end
 ---
 ---@param lnum number
 ---@param endLnum number
----@param text? string
 ---@param virtText? string
----@param width? number
----@param doRender? boolean
+---@param namespaces? number[]
 ---@return boolean
-function FoldBuffer:closeFold(lnum, endLnum, text, virtText, width, doRender)
+function FoldBuffer:closeFold(lnum, endLnum, virtText, namespaces)
     local lineCount = self:lineCount()
     endLnum = math.min(endLnum, lineCount)
     if endLnum < lnum then
         return false
     end
     local fl = self.foldedLines[lnum]
-    if fl then
-        if width and fl:widthChanged(width) then
-            fl.width = width
-        end
-        if text and fl:textChanged(text) then
-            fl.text = text
-        end
-        if not width and not text then
-            return false
-        end
-    else
+    if not fl then
         if self.foldedLineCount == 0 and lineCount ~= #self.foldedLines then
             self:resetFoldedLines()
         end
-        fl = foldedline:new(self.bufnr, self.ns, text, width)
+        fl = foldedline:new(self.bufnr, self.ns)
         self.foldedLineCount = self.foldedLineCount + 1
         self.foldedLines[lnum] = fl
     end
-    fl:updateVirtText(lnum, endLnum, virtText, doRender)
+    local extIds
+    if namespaces then
+        extIds = render.getLineExtMarkIds(self.bufnr, lnum, namespaces)
+    end
+    fl:updateVirtText(lnum, endLnum, virtText, extIds)
     return true
 end
 
-function FoldBuffer:scanFoldedRanges(winid, s, e)
-    local res = {}
-    local stack = {}
-    s, e = s or 1, e or self:lineCount()
-    utils.winCall(winid, function()
-        for i = s, e do
-            local skip = false
-            while #stack > 0 and i >= stack[#stack] do
-                local endLnum = table.remove(stack)
-                cmd(endLnum .. 'foldclose')
-                skip = true
-            end
-            if not skip then
-                local endLnum = utils.foldClosedEnd(winid, i)
-                if endLnum ~= -1 then
-                    table.insert(stack, endLnum)
-                    table.insert(res, {i - 1, endLnum - 1})
-                    cmd(i .. 'foldopen')
-                end
-            end
-        end
-    end)
-    return res
-end
+--#region
+-- function FoldBuffer:scanFoldedRanges(winid, s, e)
+--     local res = {}
+--     local stack = {}
+--     s, e = s or 1, e or self:lineCount()
+--     utils.winCall(winid, function()
+--         for i = s, e do
+--             local skip = false
+--             while #stack > 0 and i >= stack[#stack] do
+--                 local endLnum = table.remove(stack)
+--                 cmd(endLnum .. 'foldclose')
+--                 skip = true
+--             end
+--             if not skip then
+--                 local endLnum = utils.foldClosedEnd(winid, i)
+--                 if endLnum ~= -1 then
+--                     table.insert(stack, endLnum)
+--                     table.insert(res, {i - 1, endLnum - 1})
+--                     cmd(i .. 'foldopen')
+--                 end
+--             end
+--         end
+--     end)
+--     return res
+-- end
+--#endregion
 
 return FoldBuffer
